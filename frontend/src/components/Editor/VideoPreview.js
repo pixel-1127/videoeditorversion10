@@ -8,7 +8,7 @@ const VideoPreview = ({ videoRef, isPlaying, currentTime, duration, tracks, onTi
   const [isReady, setIsReady] = useState(false);
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [playbackError, setPlaybackError] = useState(false);
-  const [videoSource, setVideoSource] = useState(null);
+  const [blobUrl, setBlobUrl] = useState(null);
   
   // Local refs for videojs
   const videoNode = useRef(null);
@@ -29,140 +29,143 @@ const VideoPreview = ({ videoRef, isPlaying, currentTime, duration, tracks, onTi
       return currentTime >= start && currentTime < end;
     });
 
-    // Use the first found clip (in a real editor, this would be more complex with compositing)
-    const newActiveVideo = activeClips[0] || null;
-    setActiveVideo(newActiveVideo);
-
-    // Update video source if clip changed
-    if (newActiveVideo) {
-      if (newActiveVideo.file) {
-        // For uploaded files, use the file object directly
-        setVideoSource(newActiveVideo.file);
-      } else if (newActiveVideo.src) {
-        // For sample videos, use the src URL
-        setVideoSource(newActiveVideo.src);
-      }
-    } else {
-      setVideoSource(null);
-    }
+    // Use the first found clip
+    setActiveVideo(activeClips[0] || null);
   }, [currentTime, tracks]);
 
-  // Video.js initialization
+  // Clean up blob URL when component unmounts
   useEffect(() => {
-    // Only initialize player when we have a video element and source
-    if (!videoNode.current || !activeVideo || !videoSource) {
+    return () => {
+      if (blobUrl) {
+        URL.revokeObjectURL(blobUrl);
+      }
+    };
+  }, [blobUrl]);
+
+  // Initialize Video.js when component mounts or activeVideo changes
+  useEffect(() => {
+    // If there's no video clip or no DOM node, don't do anything
+    if (!activeVideo || !videoNode.current) {
+      if (player.current) {
+        player.current.dispose();
+        player.current = null;
+      }
       return;
     }
 
-    // If player already exists, dispose it first
+    // Reset states
+    setIsReady(false);
+    setLoadingProgress(0);
+    setPlaybackError(false);
+    
+    // Clean up previous player instance if it exists
     if (player.current) {
       player.current.dispose();
       player.current = null;
     }
 
-    // Set initial loading state
-    setIsReady(false);
-    setLoadingProgress(0);
-    setPlaybackError(false);
+    try {
+      // Create a new Video.js player
+      const vjsPlayer = videojs(videoNode.current, {
+        autoplay: false,
+        controls: true,  // Enable controls for easier debugging
+        preload: 'auto',
+        fluid: true,
+        playsinline: true,
+        muted: true,  // Start muted to avoid autoplay issues
+        responsive: true,
+        sources: []  // Start with empty sources, we'll add them after
+      });
+      
+      player.current = vjsPlayer;
 
-    // Delay video.js initialization to ensure DOM is ready
-    setTimeout(() => {
-      try {
-        // Determine the source type
-        const isFileObject = videoSource instanceof File;
-        const sourceUrl = isFileObject ? URL.createObjectURL(videoSource) : videoSource;
-        const sourceType = isFileObject ? (videoSource.type || 'video/mp4') : 'video/mp4';
-
-        // Create video.js player
-        player.current = videojs(videoNode.current, {
-          autoplay: false,
-          controls: true, // Enable controls for testing
-          muted: true, // Start muted to help with autoplay policies
-          preload: 'auto',
-          responsive: true,
-          fluid: true,
-          playsinline: true,
-          html5: {
-            nativeAudioTracks: false,
-            nativeVideoTracks: false,
-            vhs: {
-              overrideNative: true
-            }
-          }
-        });
-
-        // Set source programmatically after player initialization
-        player.current.src({
+      // Prepare the video source
+      let sourceUrl;
+      
+      // Revoke any existing blob URL
+      if (blobUrl) {
+        URL.revokeObjectURL(blobUrl);
+        setBlobUrl(null);
+      }
+      
+      // Handle different source types
+      if (activeVideo.file) {
+        // For uploaded videos (File objects)
+        const newBlobUrl = URL.createObjectURL(activeVideo.file);
+        setBlobUrl(newBlobUrl);
+        sourceUrl = newBlobUrl;
+        console.log('Created blob URL for uploaded file:', newBlobUrl);
+      } else {
+        // For sample videos (URLs)
+        sourceUrl = activeVideo.src;
+        console.log('Using direct source URL:', sourceUrl);
+      }
+      
+      // Set up player event handlers
+      vjsPlayer.on('ready', () => {
+        console.log('Video.js player is ready');
+        
+        // Set the video source after player is ready
+        vjsPlayer.src({
           src: sourceUrl,
-          type: sourceType
+          type: activeVideo.file ? activeVideo.file.type || 'video/mp4' : 'video/mp4'
         });
-
-        // Event listeners
-        player.current.on('ready', () => {
-          console.log('Video.js player is ready');
-          setIsReady(true);
-          setLoadingProgress(0.5);
-          
-          // Export methods to parent component
-          if (videoRef) {
-            videoRef.current = {
-              getCurrentTime: () => player.current ? player.current.currentTime() : 0,
-              seekTo: (seconds) => {
-                if (player.current) {
-                  player.current.currentTime(seconds);
-                }
-              }
-            };
-          }
-        });
-
-        player.current.on('loadeddata', () => {
-          console.log('Video data loaded');
-          setLoadingProgress(1);
-        });
-
-        player.current.on('error', (error) => {
-          console.error('Video.js error:', player.current.error());
-          setPlaybackError(true);
-          setLoadingProgress(0);
-        });
-
-        player.current.on('timeupdate', () => {
-          if (player.current && isPlaying) {
-            const currentPlayerTime = player.current.currentTime();
-            if (Math.abs(currentPlayerTime - currentTime) > 0.5) {
-              onTimeUpdate(currentPlayerTime);
-            }
-          }
-        });
-
-        // Set the initial time
+        
+        // Set initial time if needed
         if (currentTime > 0) {
-          player.current.currentTime(currentTime);
+          vjsPlayer.currentTime(currentTime);
         }
-      } catch (error) {
-        console.error('Error initializing Video.js:', error);
+        
+        // Set up the videoRef for parent component
+        if (videoRef) {
+          videoRef.current = {
+            getCurrentTime: () => vjsPlayer.currentTime(),
+            seekTo: (seconds) => vjsPlayer.currentTime(seconds)
+          };
+        }
+        
+        setIsReady(true);
+      });
+      
+      vjsPlayer.on('loadeddata', () => {
+        console.log('Video data loaded');
+        setLoadingProgress(1);
+      });
+      
+      vjsPlayer.on('error', (e) => {
+        console.error('Video.js error:', vjsPlayer.error(), e);
         setPlaybackError(true);
-      }
-    }, 100);
-
-    // Cleanup function
-    return () => {
-      if (player.current) {
-        player.current.dispose();
-        player.current = null;
-      }
-    };
-  }, [videoSource, activeVideo]);
+        setLoadingProgress(0);
+      });
+      
+      vjsPlayer.on('timeupdate', () => {
+        if (isPlaying) {
+          onTimeUpdate(vjsPlayer.currentTime());
+        }
+      });
+      
+      // Cleanup function
+      return () => {
+        if (player.current) {
+          player.current.dispose();
+          player.current = null;
+        }
+      };
+      
+    } catch (error) {
+      console.error('Error initializing Video.js:', error);
+      setPlaybackError(true);
+    }
+  }, [activeVideo]);
 
   // Handle play/pause state
   useEffect(() => {
     if (!player.current || !isReady) return;
-
+    
     if (isPlaying) {
       player.current.play().catch(error => {
         console.error('Play error:', error);
-        // Try again with muted to overcome autoplay restrictions
+        // Try with muted to overcome autoplay restrictions
         player.current.muted(true);
         player.current.play().catch(e => {
           console.error('Play error even with mute:', e);
@@ -174,21 +177,20 @@ const VideoPreview = ({ videoRef, isPlaying, currentTime, duration, tracks, onTi
     }
   }, [isPlaying, isReady]);
 
-  // Seek to the specific time - this ensures timeline and video stay in sync
+  // Handle seeking to specific time
   useEffect(() => {
     if (player.current && isReady && Math.abs(player.current.currentTime() - currentTime) > 0.5) {
       player.current.currentTime(currentTime);
     }
   }, [currentTime, isReady]);
 
-  // Manual timer for updating timeline when video is playing
+  // Update parent component with current time
   useEffect(() => {
     if (!isPlaying || !isReady || !player.current) return;
     
     const timer = setInterval(() => {
       if (player.current) {
-        const currTime = player.current.currentTime();
-        onTimeUpdate(currTime);
+        onTimeUpdate(player.current.currentTime());
       }
     }, 50);
     
@@ -232,21 +234,21 @@ const VideoPreview = ({ videoRef, isPlaying, currentTime, duration, tracks, onTi
         
         {/* Video player */}
         <div className="w-full h-full">
-          {activeVideo && (
-            <div data-vjs-player className="w-full h-full">
-              <video
-                ref={videoNode}
-                className="video-js vjs-big-play-centered vjs-fluid"
-                playsInline
-                crossOrigin="anonymous"
-              ></video>
-            </div>
-          )}
+          {/* Always keep the video element in the DOM */}
+          <div data-vjs-player className="w-full h-full">
+            <video
+              ref={videoNode}
+              className="video-js vjs-big-play-centered vjs-fluid"
+              playsInline
+              muted
+              crossOrigin="anonymous"
+            ></video>
+          </div>
         </div>
         
-        {/* Empty state when no video is active */}
+        {/* Empty state when no video is active - render on top of player */}
         {!activeVideo && (
-          <div className="w-full h-full flex flex-col items-center justify-center text-editor-text-muted">
+          <div className="absolute inset-0 w-full h-full flex flex-col items-center justify-center text-editor-text-muted bg-black bg-opacity-75">
             <motion.div 
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
