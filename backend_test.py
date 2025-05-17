@@ -3,6 +3,7 @@ import requests
 import sys
 import time
 import uuid
+import os
 from datetime import datetime
 
 class VideoEditorAPITester:
@@ -11,10 +12,13 @@ class VideoEditorAPITester:
         self.tests_run = 0
         self.tests_passed = 0
 
-    def run_test(self, name, method, endpoint, expected_status, data=None):
+    def run_test(self, name, method, endpoint, expected_status, data=None, files=None):
         """Run a single API test"""
         url = f"{self.base_url}/{endpoint}"
-        headers = {'Content-Type': 'application/json'}
+        headers = {}
+        
+        if not files and method != 'GET':
+            headers['Content-Type'] = 'application/json'
         
         self.tests_run += 1
         print(f"\n🔍 Testing {name}...")
@@ -24,7 +28,14 @@ class VideoEditorAPITester:
             if method == 'GET':
                 response = requests.get(url, headers=headers)
             elif method == 'POST':
-                response = requests.post(url, json=data, headers=headers)
+                if files:
+                    response = requests.post(url, data=data, files=files)
+                else:
+                    response = requests.post(url, json=data, headers=headers)
+            elif method == 'PUT':
+                response = requests.put(url, json=data, headers=headers)
+            elif method == 'DELETE':
+                response = requests.delete(url, headers=headers)
 
             success = response.status_code == expected_status
             if success:
@@ -76,6 +87,33 @@ class VideoEditorAPITester:
             "Get Status Checks",
             "GET",
             "api/status",
+            200
+        )
+        return success, response
+        
+    def test_upload_video(self, file_path):
+        """Test uploading a video file"""
+        if not os.path.exists(file_path):
+            print(f"❌ Test file not found: {file_path}")
+            return False, {}
+            
+        with open(file_path, 'rb') as f:
+            files = {'file': (os.path.basename(file_path), f, 'video/mp4')}
+            success, response = self.run_test(
+                "Upload Video",
+                "POST",
+                "api/media/upload",
+                200,
+                files=files
+            )
+        return success, response
+        
+    def test_get_media(self):
+        """Test getting all media items"""
+        success, response = self.run_test(
+            "Get Media Items",
+            "GET",
+            "api/media",
             200
         )
         return success, response
