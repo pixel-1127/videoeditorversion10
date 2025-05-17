@@ -156,6 +156,28 @@ def main():
             print(f"❌ Could not find created status check with client_name: {client_name}")
             tester.tests_passed -= 1
     
+    # Test media endpoints
+    # Create a small test video file
+    test_video_path = "/tmp/test_video.mp4"
+    try:
+        # Check if we have a test video file, if not create a dummy one
+        if not os.path.exists(test_video_path):
+            print("Creating test video file...")
+            os.system(f"dd if=/dev/urandom of={test_video_path} bs=1M count=1")
+        
+        # Test video upload
+        upload_success, upload_response = tester.test_upload_video(test_video_path)
+        if not upload_success:
+            print("❌ Video upload test failed")
+        
+        # Test getting media items
+        media_success, media_response = tester.test_get_media()
+        if not media_success:
+            print("❌ Get media items test failed")
+        
+    except Exception as e:
+        print(f"❌ Error during media tests: {str(e)}")
+    
     # Print results
     print(f"\n📊 Tests passed: {tester.tests_passed}/{tester.tests_run}")
     return 0 if tester.tests_passed == tester.tests_run else 1
