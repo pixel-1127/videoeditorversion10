@@ -18,6 +18,7 @@ class VideoEditorAPITester:
         
         self.tests_run += 1
         print(f"\n🔍 Testing {name}...")
+        print(f"URL: {url}")
         
         try:
             if method == 'GET':
