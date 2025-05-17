@@ -64,7 +64,7 @@ class VideoEditorAPITester:
         success, response = self.run_test(
             "Create Status Check",
             "POST",
-            "status",
+            "api/status",
             200,
             data={"client_name": client_name}
         )
