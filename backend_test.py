@@ -75,7 +75,7 @@ class VideoEditorAPITester:
         success, response = self.run_test(
             "Get Status Checks",
             "GET",
-            "status",
+            "api/status",
             200
         )
         return success, response
