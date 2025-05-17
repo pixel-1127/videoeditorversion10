@@ -1,12 +1,17 @@
-import React, { useEffect, useState, useMemo } from 'react';
-import ReactPlayer from 'react-player';
+import React, { useEffect, useState, useRef } from 'react';
 import { motion } from 'framer-motion';
+import videojs from 'video.js';
+import 'video.js/dist/video-js.css';
 
 const VideoPreview = ({ videoRef, isPlaying, currentTime, duration, tracks, onTimeUpdate }) => {
   const [activeVideo, setActiveVideo] = useState(null);
   const [isReady, setIsReady] = useState(false);
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [playbackError, setPlaybackError] = useState(false);
+  
+  // Local refs for videojs
+  const videoNode = useRef(null);
+  const player = useRef(null);
 
   // Find the video clip at the current time position
   useEffect(() => {
@@ -27,86 +32,119 @@ const VideoPreview = ({ videoRef, isPlaying, currentTime, duration, tracks, onTi
     setActiveVideo(activeClips[0] || null);
   }, [currentTime, tracks]);
 
-  // Update time when playing
+  // Initialize Video.js when component mounts or activeVideo changes
   useEffect(() => {
-    if (!isPlaying || !videoRef.current || !isReady) return;
-    
-    const timer = setInterval(() => {
-      if (videoRef.current) {
-        const newTime = videoRef.current.getCurrentTime();
-        onTimeUpdate(newTime);
+    if (!activeVideo || !videoNode.current) return;
+
+    // Clean up previous player instance
+    if (player.current) {
+      player.current.dispose();
+      player.current = null;
+    }
+
+    // Check if we have the original file (for uploaded videos)
+    const videoSource = activeVideo.file ? 
+      URL.createObjectURL(activeVideo.file) : // Create a fresh URL from the file
+      activeVideo.src; // Use the existing src for sample videos or already processed videos
+
+    // Create new player instance
+    player.current = videojs(videoNode.current, {
+      autoplay: false,
+      controls: false,
+      preload: 'auto',
+      playsinline: true,
+      sources: [{
+        src: videoSource,
+        type: activeVideo.file ? 
+          activeVideo.file.type || 'video/mp4' : 
+          'video/mp4'
+      }],
+      html5: {
+        vhs: {
+          overrideNative: true
+        },
+        nativeAudioTracks: false,
+        nativeVideoTracks: false
       }
-    }, 50);
+    }, function onPlayerReady() {
+      // Player is ready
+      setIsReady(true);
+      setLoadingProgress(1);
+      setPlaybackError(false);
+      
+      // Expose player methods to parent through videoRef
+      if (videoRef) {
+        videoRef.current = {
+          getCurrentTime: () => player.current.currentTime(),
+          seekTo: (seconds) => {
+            if (player.current) {
+              player.current.currentTime(seconds);
+            }
+          }
+        };
+      }
+    });
 
-    return () => clearInterval(timer);
-  }, [isPlaying, isReady, onTimeUpdate, videoRef]);
+    // Error handling
+    player.current.on('error', () => {
+      console.error("Video playback error:", player.current.error());
+      setPlaybackError(true);
+      setLoadingProgress(0);
+    });
 
-  // Handle video progress for loading indicator
-  const handleProgress = ({ loaded, loadedSeconds, played, playedSeconds }) => {
-    setLoadingProgress(loaded);
-  };
+    // Loading progress
+    player.current.on('loadeddata', () => {
+      setLoadingProgress(1);
+    });
 
-  // Handle when video is ready to play
-  const handleReady = () => {
-    setIsReady(true);
-    setLoadingProgress(1);
-    setPlaybackError(false);
-  };
-  
-  // Handle playback errors
-  const handleError = (e) => {
-    console.error("Video playback error:", e);
-    setPlaybackError(true);
-    setLoadingProgress(0);
-  };
+    player.current.on('timeupdate', () => {
+      if (isPlaying && player.current) {
+        onTimeUpdate(player.current.currentTime());
+      }
+    });
+
+    // Clean up
+    return () => {
+      if (player.current) {
+        player.current.dispose();
+        player.current = null;
+      }
+    };
+  }, [activeVideo, isPlaying, onTimeUpdate, videoRef]);
+
+  // Handle play/pause state
+  useEffect(() => {
+    if (!player.current) return;
+    
+    if (isPlaying) {
+      player.current.play().catch(error => {
+        console.error("Play error:", error);
+        setPlaybackError(true);
+      });
+    } else {
+      player.current.pause();
+    }
+  }, [isPlaying]);
 
   // Seek to the specific time
   useEffect(() => {
-    if (videoRef.current && isReady) {
-      videoRef.current.seekTo(currentTime, 'seconds');
+    if (player.current && isReady && Math.abs(player.current.currentTime() - currentTime) > 0.5) {
+      player.current.currentTime(currentTime);
     }
-  }, [currentTime, isReady, videoRef]);
+  }, [currentTime, isReady]);
 
   // If there's a video clip, render it in the player
   const renderPlayer = () => {
     if (activeVideo) {
-      // Check if we have the original file (for uploaded videos)
-      const videoSource = activeVideo.file ? 
-        URL.createObjectURL(activeVideo.file) : // Create a fresh URL from the file
-        activeVideo.src; // Use the existing src for sample videos or already processed videos
-      
       return (
-        <ReactPlayer
-          ref={videoRef}
-          url={videoSource}
-          playing={isPlaying}
-          controls={false}
-          width="100%"
-          height="100%"
-          onProgress={handleProgress}
-          onReady={handleReady}
-          onError={handleError}
-          progressInterval={100}
-          playsinline
-          pip={false}
-          stopOnUnmount={true}
-          config={{
-            file: {
-              forceVideo: true,
-              attributes: {
-                crossOrigin: "anonymous",
-                controlsList: "nodownload",
-                className: 'video-player',
-                disablePictureInPicture: true,
-                disableRemotePlayback: true
-              },
-              // Include more file format support
-              forceDASH: false,
-              forceHLS: false,
-              forceVideo: true
-            }
-          }}
-        />
+        <div data-vjs-player className="w-full h-full">
+          <video
+            ref={videoNode}
+            className="video-js vjs-big-play-centered vjs-fluid"
+            playsInline
+            crossOrigin="anonymous"
+          ></video>
+        </div>
       );
     }
     return null;
@@ -135,8 +173,9 @@ const VideoPreview = ({ videoRef, isPlaying, currentTime, duration, tracks, onTi
                 className="mt-2 text-sm bg-editor-primary px-3 py-1 rounded"
                 onClick={() => {
                   setPlaybackError(false);
-                  if (videoRef.current) {
-                    videoRef.current.seekTo(currentTime, 'seconds');
+                  if (player.current) {
+                    player.current.currentTime(currentTime);
+                    player.current.play().catch(e => console.error("Retry error:", e));
                   }
                 }}
               >
