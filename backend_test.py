@@ -54,7 +54,7 @@ class VideoEditorAPITester:
         success, response = self.run_test(
             "Root API Endpoint",
             "GET",
-            "",
+            "api",
             200
         )
         return success
