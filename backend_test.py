@@ -82,7 +82,7 @@ class VideoEditorAPITester:
 
 def main():
     # Get the backend URL from environment variable
-    backend_url = "https://2db12a04-3cea-4bee-8ddb-879a7f5c9f0b.preview.emergentagent.com/api"
+    backend_url = "https://2db12a04-3cea-4bee-8ddb-879a7f5c9f0b.preview.emergentagent.com"
     
     # Setup tester
     tester = VideoEditorAPITester(backend_url)
