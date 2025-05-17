@@ -8,6 +8,7 @@ const VideoPreview = ({ videoRef, isPlaying, currentTime, duration, tracks, onTi
   const [isReady, setIsReady] = useState(false);
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [playbackError, setPlaybackError] = useState(false);
+  const [videoSource, setVideoSource] = useState(null);
   
   // Local refs for videojs
   const videoNode = useRef(null);
@@ -29,126 +30,170 @@ const VideoPreview = ({ videoRef, isPlaying, currentTime, duration, tracks, onTi
     });
 
     // Use the first found clip (in a real editor, this would be more complex with compositing)
-    setActiveVideo(activeClips[0] || null);
+    const newActiveVideo = activeClips[0] || null;
+    setActiveVideo(newActiveVideo);
+
+    // Update video source if clip changed
+    if (newActiveVideo) {
+      if (newActiveVideo.file) {
+        // For uploaded files, use the file object directly
+        setVideoSource(newActiveVideo.file);
+      } else if (newActiveVideo.src) {
+        // For sample videos, use the src URL
+        setVideoSource(newActiveVideo.src);
+      }
+    } else {
+      setVideoSource(null);
+    }
   }, [currentTime, tracks]);
 
-  // Initialize Video.js when component mounts or activeVideo changes
+  // Video.js initialization
   useEffect(() => {
-    if (!activeVideo || !videoNode.current) return;
+    // Only initialize player when we have a video element and source
+    if (!videoNode.current || !activeVideo || !videoSource) {
+      return;
+    }
 
-    // Clean up previous player instance
+    // If player already exists, dispose it first
     if (player.current) {
       player.current.dispose();
       player.current = null;
     }
 
-    // Check if we have the original file (for uploaded videos)
-    const videoSource = activeVideo.file ? 
-      URL.createObjectURL(activeVideo.file) : // Create a fresh URL from the file
-      activeVideo.src; // Use the existing src for sample videos or already processed videos
+    // Set initial loading state
+    setIsReady(false);
+    setLoadingProgress(0);
+    setPlaybackError(false);
 
-    // Create new player instance
-    player.current = videojs(videoNode.current, {
-      autoplay: false,
-      controls: false,
-      preload: 'auto',
-      playsinline: true,
-      sources: [{
-        src: videoSource,
-        type: activeVideo.file ? 
-          activeVideo.file.type || 'video/mp4' : 
-          'video/mp4'
-      }],
-      html5: {
-        vhs: {
-          overrideNative: true
-        },
-        nativeAudioTracks: false,
-        nativeVideoTracks: false
-      }
-    }, function onPlayerReady() {
-      // Player is ready
-      setIsReady(true);
-      setLoadingProgress(1);
-      setPlaybackError(false);
-      
-      // Expose player methods to parent through videoRef
-      if (videoRef) {
-        videoRef.current = {
-          getCurrentTime: () => player.current.currentTime(),
-          seekTo: (seconds) => {
-            if (player.current) {
-              player.current.currentTime(seconds);
+    // Delay video.js initialization to ensure DOM is ready
+    setTimeout(() => {
+      try {
+        // Determine the source type
+        const isFileObject = videoSource instanceof File;
+        const sourceUrl = isFileObject ? URL.createObjectURL(videoSource) : videoSource;
+        const sourceType = isFileObject ? (videoSource.type || 'video/mp4') : 'video/mp4';
+
+        // Create video.js player
+        player.current = videojs(videoNode.current, {
+          autoplay: false,
+          controls: true, // Enable controls for testing
+          muted: true, // Start muted to help with autoplay policies
+          preload: 'auto',
+          responsive: true,
+          fluid: true,
+          playsinline: true,
+          html5: {
+            nativeAudioTracks: false,
+            nativeVideoTracks: false,
+            vhs: {
+              overrideNative: true
             }
           }
-        };
+        });
+
+        // Set source programmatically after player initialization
+        player.current.src({
+          src: sourceUrl,
+          type: sourceType
+        });
+
+        // Event listeners
+        player.current.on('ready', () => {
+          console.log('Video.js player is ready');
+          setIsReady(true);
+          setLoadingProgress(0.5);
+          
+          // Export methods to parent component
+          if (videoRef) {
+            videoRef.current = {
+              getCurrentTime: () => player.current ? player.current.currentTime() : 0,
+              seekTo: (seconds) => {
+                if (player.current) {
+                  player.current.currentTime(seconds);
+                }
+              }
+            };
+          }
+        });
+
+        player.current.on('loadeddata', () => {
+          console.log('Video data loaded');
+          setLoadingProgress(1);
+        });
+
+        player.current.on('error', (error) => {
+          console.error('Video.js error:', player.current.error());
+          setPlaybackError(true);
+          setLoadingProgress(0);
+        });
+
+        player.current.on('timeupdate', () => {
+          if (player.current && isPlaying) {
+            const currentPlayerTime = player.current.currentTime();
+            if (Math.abs(currentPlayerTime - currentTime) > 0.5) {
+              onTimeUpdate(currentPlayerTime);
+            }
+          }
+        });
+
+        // Set the initial time
+        if (currentTime > 0) {
+          player.current.currentTime(currentTime);
+        }
+      } catch (error) {
+        console.error('Error initializing Video.js:', error);
+        setPlaybackError(true);
       }
-    });
+    }, 100);
 
-    // Error handling
-    player.current.on('error', () => {
-      console.error("Video playback error:", player.current.error());
-      setPlaybackError(true);
-      setLoadingProgress(0);
-    });
-
-    // Loading progress
-    player.current.on('loadeddata', () => {
-      setLoadingProgress(1);
-    });
-
-    player.current.on('timeupdate', () => {
-      if (isPlaying && player.current) {
-        onTimeUpdate(player.current.currentTime());
-      }
-    });
-
-    // Clean up
+    // Cleanup function
     return () => {
       if (player.current) {
         player.current.dispose();
         player.current = null;
       }
     };
-  }, [activeVideo, isPlaying, onTimeUpdate, videoRef]);
+  }, [videoSource, activeVideo]);
 
   // Handle play/pause state
   useEffect(() => {
-    if (!player.current) return;
-    
+    if (!player.current || !isReady) return;
+
     if (isPlaying) {
       player.current.play().catch(error => {
-        console.error("Play error:", error);
-        setPlaybackError(true);
+        console.error('Play error:', error);
+        // Try again with muted to overcome autoplay restrictions
+        player.current.muted(true);
+        player.current.play().catch(e => {
+          console.error('Play error even with mute:', e);
+          setPlaybackError(true);
+        });
       });
     } else {
       player.current.pause();
     }
-  }, [isPlaying]);
+  }, [isPlaying, isReady]);
 
-  // Seek to the specific time
+  // Seek to the specific time - this ensures timeline and video stay in sync
   useEffect(() => {
     if (player.current && isReady && Math.abs(player.current.currentTime() - currentTime) > 0.5) {
       player.current.currentTime(currentTime);
     }
   }, [currentTime, isReady]);
 
-  // If there's a video clip, render it in the player
-  const renderPlayer = () => {
-    if (activeVideo) {
-      return (
-        <div data-vjs-player className="w-full h-full">
-          <video
-            ref={videoNode}
-            className="video-js vjs-big-play-centered vjs-fluid"
-            playsInline
-            crossOrigin="anonymous"
-          ></video>
-        </div>
-      );
-    }
-    return null;
-  };
+  // Manual timer for updating timeline when video is playing
+  useEffect(() => {
+    if (!isPlaying || !isReady || !player.current) return;
+    
+    const timer = setInterval(() => {
+      if (player.current) {
+        const currTime = player.current.currentTime();
+        onTimeUpdate(currTime);
+      }
+    }, 50);
+    
+    return () => clearInterval(timer);
+  }, [isPlaying, isReady, onTimeUpdate]);
 
   return (
     <div className="w-full h-full flex flex-col items-center justify-center relative">
@@ -187,7 +232,16 @@ const VideoPreview = ({ videoRef, isPlaying, currentTime, duration, tracks, onTi
         
         {/* Video player */}
         <div className="w-full h-full">
-          {renderPlayer()}
+          {activeVideo && (
+            <div data-vjs-player className="w-full h-full">
+              <video
+                ref={videoNode}
+                className="video-js vjs-big-play-centered vjs-fluid"
+                playsInline
+                crossOrigin="anonymous"
+              ></video>
+            </div>
+          )}
         </div>
         
         {/* Empty state when no video is active */}
